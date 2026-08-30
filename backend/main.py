@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from backend.api import video_router 
 
 app = FastAPI(
     title="KineticAI Backend API",
@@ -14,6 +15,8 @@ app.add_middleware(
     allow_methods=["*"],  
     allow_headers=["*"],
 )
+
+app.include_router(video_router.router, prefix="/api/video", tags=["Video"])
 
 @app.get("/")
 async def root_health_check():
