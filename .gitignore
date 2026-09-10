@@ -2,3 +2,7 @@
 venv
 __pycache__
 *.pyc
+# Dataset and Model Files
+backend/core/lstm_dataset/
+backend/core/exercise_dataset.csv
+backend/core/kinetic_lstm_model.h5
