@@ -25,19 +25,16 @@ df['target_class'] = df['exercise'] + "_" + df['label'].astype(str)
 sequences = []
 labels = []
 
-# 각 영상(seq_id)별로 관절 좌표들만 묶어서 하나의 시퀀스(흐름)로 만듭니다.
 for seq_id, group in df.groupby('seq_id'):
-    # 6번 열(Nose_x)부터 끝까지가 48개의 X, Y 좌표입니다.
-    coords = group.iloc[:, 6:].values.tolist() 
+    # 불필요한 데이터 제거
+    coords = group.iloc[:, 7:].values.tolist() 
     sequences.append(coords)
-    # 해당 묶음의 정답지를 저장합니다.
     labels.append(group['target_class'].iloc[0])
 
-# 2. 데이터 길이 맞추기 (패딩)
-MAX_FRAMES = 100 # 최대 프레임 길이 (약 3~4초 분량, 필요시 조절 가능)
+
+MAX_FRAMES = 100 # (약 3~4초 분량, 필요시 조절 가능)
 X = pad_sequences(sequences, maxlen=MAX_FRAMES, padding='post', dtype='float32')
 
-# 3. 정답지(텍스트)를 인공지능이 이해하는 숫자로 변환
 encoder = LabelEncoder()
 y_encoded = encoder.fit_transform(labels)
 y_categorical = to_categorical(y_encoded)
@@ -54,7 +51,7 @@ model = Sequential([
     Dropout(0.2),
     Dense(len(encoder.classes_), activation='softmax')
 ])
-
+ 
 model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
 # 5. 본격적인 훈련 시작
