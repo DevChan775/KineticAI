@@ -41,6 +41,8 @@ export default function App() {
   const sendFrame = async () => {
     if (cameraRef.current && wsRef.current && wsRef.current.readyState === 1) { // 1 = WebSocket.OPEN
       try {
+        // await는 외부장치와 작업할 때만 주로 씀. 
+        // 컴퓨터 CPU가 혼자 할 수 없고, 외부 장치나 네트워크에 부탁해야 하는 작업들은 시간이 꽤 걸림 -> 추후에 공부
         const photo = await cameraRef.current.takePictureAsync({
           quality: 0.2,
           base64: true,
@@ -67,7 +69,7 @@ export default function App() {
       if (interval) clearInterval(interval);
     };
   }, [isRecording]);
-
+  
   if (!permission) {
     return <View style={styles.container} />;
   }
