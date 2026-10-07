@@ -6,3 +6,9 @@ __pycache__
 backend/core/lstm_dataset/
 backend/core/exercise_dataset.csv
 backend/core/kinetic_lstm_model.h5
+
+backend/core/pose_landmarker_full.task
+backend/core/kinetic_lstm_model.keras
+*.task
+*.keras
+*.pkl

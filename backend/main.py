@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.api import video_router 
+from api import video_router
 
 app = FastAPI(
     title="KineticAI Backend API",
