@@ -33,7 +33,7 @@ export default function App() {
   };
 
   const connectAndRecord = () => {
-    const socket = new WebSocket('ws://192.168.102.75:8000/api/video/ws/video');
+    const socket = new WebSocket('ws://172.20.10.12:8000/api/video/ws/video');
     wsRef.current = socket;
 
     socket.onopen = () => {
@@ -57,11 +57,12 @@ export default function App() {
       }
     };
 
-    socket.onclose = () => {
-        setIsRecording(false);
-        setFeedbackMsg("운동이 종료되었습니다.");
-        setBorderColor('transparent');
-    }
+    socket.onclose = (e: CloseEvent) => {
+    console.log(`웹소켓 종료 코드: ${e.code}, 사유: ${e.reason}`); 
+    setIsRecording(false);
+    setFeedbackMsg("운동이 종료되었습니다.");
+    setBorderColor('transparent');
+};
   };
 
   const startRecording = () => {
@@ -148,14 +149,12 @@ export default function App() {
 
 return (
   <View style={styles.container}>
-    {/* 1. 카메라 화면 */}
     <CameraView 
       style={styles.camera} 
       facing="front" 
       ref={cameraRef}
     />
 
-    {/* 2. UI 오버레이 (절대 위치로 카메라 위에 띄움) */}
     <View style={[
         styles.borderOverlay, 
         { 
