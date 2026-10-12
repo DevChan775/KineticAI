@@ -47,6 +47,7 @@ async def websocket_video_endpoint(websocket: WebSocket):
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
     
     frame_sequence = deque(maxlen=SEQ_LENGTH)
+    exercise_count = 0  
     
     try:
         while True:
@@ -140,6 +141,14 @@ async def websocket_video_endpoint(websocket: WebSocket):
                             exercise_name = predicted_label
                             condition = "알 수 없음"
 
+                        exercise_count += 1
+                        await websocket.send_text(json.dumps({
+                            "status": "count",
+                            "count": exercise_count,
+                            "type": "count",
+                            "priority": 0
+                        }))
+
                         if condition == '정답':
                             border_color = "blue"
                             feedback_msg = "좋은 자세입니다!"
@@ -151,7 +160,8 @@ async def websocket_video_endpoint(websocket: WebSocket):
                             "status": "success", 
                             "color": border_color,
                             "feedback": feedback_msg,
-                            "confidence": f"{max_prob*100:.1f}%"
+                            "confidence": f"{max_prob*100:.1f}%",
+                            "priority": True
                         }))
                     
                     for _ in range(20):

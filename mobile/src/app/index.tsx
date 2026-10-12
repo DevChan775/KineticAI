@@ -13,16 +13,43 @@ export default function App() {
 
   const [showMannequin, setShowMannequin] = useState<boolean>(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [exerciseCount, setExerciseCount] = useState<number>(0);
 
   const cameraRef = useRef<CameraView>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const isSpeakingFeedbackRef = useRef<boolean>(false);  
+  const pendingCountRef = useRef<number>(0); 
  
   useEffect(() => {
     if (!permission?.granted) {
       requestPermission();
     }
   }, [permission]);
+
+    const convertToKorean = (num: number): string => {
+      const koreanNumbers = [
+        '영', '하나', '둘', '셋', '넷', '다섯', '여섯', '일곱', '여덟', '아홉',
+        '열', '열하나', '열둘', '열셋', '열넷', '열다섯', '열여섯', '열일곱', '열여덟', '열아홉',
+        '스물'
+      ];
+    return koreanNumbers[num] || num.toString();
+  };
+
+  const speakPendingCount = async () => {
+    if (pendingCountRef.current > 0) {
+      const countText = convertToKorean(pendingCountRef.current);
+      console.log(`🔔 횟수 음성 출력: ${countText}`);
+      Speech.speak(countText, {
+        rate: 1.0,
+        pitch: 1.0,
+        onDone: () => {
+          pendingCountRef.current = 0;
+        }
+      });
+    }
+  };
 
  
   const handleExerciseSelect = (ex: string) => {
@@ -33,25 +60,56 @@ export default function App() {
   };
 
   const connectAndRecord = () => {
-    const socket = new WebSocket('ws://172.20.10.12:8000/api/video/ws/video');
+    const socket = new WebSocket('ws://192.168.0.17:8000/api/video/ws/video');
     wsRef.current = socket;
 
     socket.onopen = () => {
       console.log('서버와 연결 성공!');
       setIsRecording(true);
+      setExerciseCount(0);
       setFeedbackMsg(`${selectedExercise} 운동을 시작합니다!`);
+      isSpeakingFeedbackRef.current = false;
+      pendingCountRef.current = 0; 
       Speech.speak("운동을 시작하세요.");
     };
+
 
     socket.onmessage = (e: MessageEvent) => {
       try {
         const result = JSON.parse(e.data);
-        if (result.status === "success") {
-          setFeedbackMsg(result.feedback);     
+        console.log('📨 서버 메시지:', result);
+
+        if (result.type === "count") {
+          setExerciseCount(result.count);
+          
+          if (isSpeakingFeedbackRef.current) {
+            pendingCountRef.current = result.count;
+            console.log(`피드백 음성 중: 횟수 큐에 저장 (${result.count})`);
+          } else {
+            const countText = convertToKorean(result.count);
+            console.log(`횟수 즉시 출력: ${countText}`);
+            Speech.speak(countText, { rate: 1.0, pitch: 1.0 });
+          }
+        }
+
+  
+        else if (result.type === "feedback") {
+          isSpeakingFeedbackRef.current = true;  
+          setFeedbackMsg(result.feedback);
           setBorderColor(result.color);
-          Speech.stop(); 
-          Speech.speak(result.feedback);
-        } 
+          
+          setTimeout(() => {
+            Speech.speak(result.feedback, {
+              rate: 1.0,
+              pitch: 1.2, 
+              onDone: () => {
+                isSpeakingFeedbackRef.current = false; 
+                console.log('✅ 피드백 음성 종료 → 대기 중인 횟수 재생');
+                speakPendingCount();  
+              }
+            });
+          }, 200);  // 200ms 딜레이
+        }
       } catch (err) {
         console.log('메시지 파싱 에러:', err);
       }
@@ -62,6 +120,9 @@ export default function App() {
     setIsRecording(false);
     setFeedbackMsg("운동이 종료되었습니다.");
     setBorderColor('transparent');
+    isSpeakingFeedbackRef.current = false;
+    pendingCountRef.current = 0;
+
 };
   };
 
@@ -103,6 +164,9 @@ export default function App() {
       setIsRecording(false);
       Speech.stop();
       setBorderColor('transparent');
+      isSpeakingFeedbackRef.current = false;
+      pendingCountRef.current = 0;
+
   }
 
   const sendFrame = async () => {
@@ -111,6 +175,7 @@ export default function App() {
         const photo = await cameraRef.current.takePictureAsync({
           quality: 0.2,
           base64: true,
+          skipProcessing: true,
         });
 
         if (photo?.base64) {
@@ -153,6 +218,7 @@ return (
       style={styles.camera} 
       facing="front" 
       ref={cameraRef}
+      mute = {true}
     />
 
     <View style={[
@@ -169,7 +235,6 @@ return (
     ]}>
         
         <View style={styles.topSection}>
-            {/* 운동 선택 버튼 */}
             <View style={styles.exerciseSelector}>
                 {['풀업', '딥스', '푸쉬업', '플랭크', '사이드 런지'].map((ex) => (
                     <TouchableOpacity 
@@ -183,11 +248,15 @@ return (
                 ))}
             </View>
 
-            {/* 피드백 및 카운트다운 텍스트 */}
             <View style={styles.feedbackBox}>
                 <Text style={styles.feedbackText}>
                   {countdown !== null ? `준비: ${countdown}초` : feedbackMsg}
                 </Text>
+                {isRecording && exerciseCount > 0 && (
+                  <Text style={styles.countText}>
+                    🔔 현재 횟수: {convertToKorean(exerciseCount)}
+                  </Text>
+                )}
             </View>
         </View>
 
@@ -241,6 +310,7 @@ const styles = StyleSheet.create({
   exButtonText: { color: 'white', fontWeight: 'bold' },
   feedbackBox: { backgroundColor: 'rgba(0,0,0,0.7)', padding: 15, borderRadius: 10, width: '90%' },
   feedbackText: { color: 'white', fontSize: 16, textAlign: 'center', fontWeight: 'bold' },
+  countText: { color: '#FFD700', fontSize: 14, textAlign: 'center', fontWeight: 'bold', marginTop: 8 },
   buttonContainer: { marginBottom: 50 },
   button: { paddingVertical: 15, paddingHorizontal: 40, borderRadius: 30 },
   permButton: { marginTop: 15, padding: 12, backgroundColor: '#3182CE', borderRadius: 8 },
