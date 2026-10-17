@@ -18,6 +18,8 @@ export default function App() {
   const cameraRef = useRef<any>(null);
   const [cameraReady, setCameraReady] = useState<boolean>(false);
   const cameraReadyRef = useRef<boolean>(false);
+  const cameraStableRef = useRef<boolean>(false);
+  const [cameraStable, setCameraStable] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null); 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -151,12 +153,12 @@ export default function App() {
         if (intervalRef.current) clearInterval(intervalRef.current);
         setCountdown(null);
 
-        if (cameraReadyRef.current) {
+        if (cameraStableRef.current) {
           connectAndRecord();
         } else {
           setFeedbackMsg('카메라가 준비되지 않았습니다. 준비될 때까지 기다립니다...');
           const waitForReady = setInterval(() => {
-            if (cameraReadyRef.current) {
+            if (cameraStableRef.current) {
               clearInterval(waitForReady);
               connectAndRecord();
             }
@@ -182,49 +184,47 @@ export default function App() {
 
   }
 
-  const sendFrame = async () => {
-    if (!cameraReadyRef.current) return;
-    if (cameraRef.current && wsRef.current && wsRef.current.readyState === 1) {
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.2,
-          base64: true,
-          skipProcessing: true,
-        });
+  const canCapture = () =>
+    isRecording &&
+    cameraReadyRef.current &&
+    cameraStableRef.current &&
+    !!cameraRef.current &&
+    wsRef.current?.readyState === WebSocket.OPEN;
 
-        if (photo?.base64) {
-          wsRef.current.send(photo.base64);
-        }
-      } catch (error) {
-        console.log('프레임 전송 에러:', error);
-      }
+  const sendFrame = async () => {
+  if (!canCapture()) return;
+
+  try {
+    const photo = await cameraRef.current.takePictureAsync({
+      quality: 0.2,
+      base64: true,
+      skipProcessing: true,
+    });
+
+    if (photo?.base64 && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(photo.base64);
+      console.log('📸 프레임 전송 성공');
     }
-  };
+  } catch (error: any) {
+    const msg = String(error?.message || error);
+    if (msg.includes('CameraNotReady') || msg.includes('Camera is not ready')) {
+      return;
+    }
+    console.log('프레임 전송 에러:', error);
+  }
+};
 
   useEffect(() => {
-    let interval: NodeJS.Timeout | undefined;
-    if (isRecording && cameraReadyRef.current) {
-      interval = setInterval(() => {
-        sendFrame();
-      }, 200);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRecording, cameraReady]);
-  
-  if (!permission) return <View style={styles.container} />;
+    if (!isRecording) return;
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.infoText}>카메라 권한이 필요합니다.</Text>
-        <TouchableOpacity style={styles.permButton} onPress={requestPermission}>
-          <Text style={styles.buttonText}>권한 허용하기</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+    if (!cameraReadyRef.current || !cameraStableRef.current) return;
+
+    const interval = setInterval(() => {
+      sendFrame();
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, [isRecording, cameraStable]);
 
 return (
   <View style={styles.container}>
@@ -234,10 +234,16 @@ return (
       ref={cameraRef}
       mute={true}
       onCameraReady={() => {
-        setCameraReady(true);
-        cameraReadyRef.current = true;
-        console.log('카메라 준비 완료');
-      }}
+          console.log('카메라 준비 완료');
+          cameraReadyRef.current = true;
+          setCameraReady(true);
+
+          setTimeout(() => {
+              cameraStableRef.current = true; 
+              setCameraStable(true);
+              console.log('카메라 안정화 완료 (stable)');
+          }, 700);
+}}
     />
 
     <View style={[
