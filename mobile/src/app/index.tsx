@@ -15,8 +15,10 @@ export default function App() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [exerciseCount, setExerciseCount] = useState<number>(0);
 
-  const cameraRef = useRef<CameraView>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const cameraRef = useRef<any>(null);
+  const [cameraReady, setCameraReady] = useState<boolean>(false);
+  const cameraReadyRef = useRef<boolean>(false);
+  const wsRef = useRef<WebSocket | null>(null); 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const isSpeakingFeedbackRef = useRef<boolean>(false);  
@@ -28,7 +30,7 @@ export default function App() {
     }
   }, [permission]);
 
-    const convertToKorean = (num: number): string => {
+  const convertToKorean = (num: number): string => {
       const koreanNumbers = [
         '영', '하나', '둘', '셋', '넷', '다섯', '여섯', '일곱', '여덟', '아홉',
         '열', '열하나', '열둘', '열셋', '열넷', '열다섯', '열여섯', '열일곱', '열여덟', '열아홉',
@@ -37,7 +39,7 @@ export default function App() {
     return koreanNumbers[num] || num.toString();
   };
 
-  const speakPendingCount = async () => {
+  const speakPendingCount = () => {
     if (pendingCountRef.current > 0) {
       const countText = convertToKorean(pendingCountRef.current);
       console.log(`🔔 횟수 음성 출력: ${countText}`);
@@ -60,7 +62,7 @@ export default function App() {
   };
 
   const connectAndRecord = () => {
-    const socket = new WebSocket('ws://192.168.0.17:8000/api/video/ws/video');
+    const socket = new WebSocket('ws://192.168.123.108:8000/api/video/ws/video');
     wsRef.current = socket;
 
     socket.onopen = () => {
@@ -108,7 +110,7 @@ export default function App() {
                 speakPendingCount();  
               }
             });
-          }, 200);  // 200ms 딜레이
+          }, 200);  
         }
       } catch (err) {
         console.log('메시지 파싱 에러:', err);
@@ -148,7 +150,18 @@ export default function App() {
       if (count === 0) {
         if (intervalRef.current) clearInterval(intervalRef.current);
         setCountdown(null);
-        connectAndRecord(); 
+
+        if (cameraReadyRef.current) {
+          connectAndRecord();
+        } else {
+          setFeedbackMsg('카메라가 준비되지 않았습니다. 준비될 때까지 기다립니다...');
+          const waitForReady = setInterval(() => {
+            if (cameraReadyRef.current) {
+              clearInterval(waitForReady);
+              connectAndRecord();
+            }
+          }, 300);
+        }
       }
     }, 1000);
   };
@@ -170,6 +183,7 @@ export default function App() {
   }
 
   const sendFrame = async () => {
+    if (!cameraReadyRef.current) return;
     if (cameraRef.current && wsRef.current && wsRef.current.readyState === 1) {
       try {
         const photo = await cameraRef.current.takePictureAsync({
@@ -188,8 +202,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRecording) {
+    let interval: NodeJS.Timeout | undefined;
+    if (isRecording && cameraReadyRef.current) {
       interval = setInterval(() => {
         sendFrame();
       }, 200);
@@ -197,7 +211,7 @@ export default function App() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRecording]);
+  }, [isRecording, cameraReady]);
   
   if (!permission) return <View style={styles.container} />;
 
@@ -218,7 +232,12 @@ return (
       style={styles.camera} 
       facing="front" 
       ref={cameraRef}
-      mute = {true}
+      mute={true}
+      onCameraReady={() => {
+        setCameraReady(true);
+        cameraReadyRef.current = true;
+        console.log('카메라 준비 완료');
+      }}
     />
 
     <View style={[
@@ -260,7 +279,6 @@ return (
             </View>
         </View>
 
-        {/* 촬영 시작/중지 버튼 */}
         <View style={styles.buttonContainer}>
           <TouchableOpacity
               style={[styles.button, { backgroundColor: isRecording || countdown !== null ? '#E53E3E' : '#3182CE' }]}
@@ -323,4 +341,4 @@ const styles = StyleSheet.create({
   mannequinPlaceholder: { width: 200, height: 250, backgroundColor: 'gray', justifyContent: 'center', alignItems: 'center', marginBottom: 15 },
   modalDesc: { fontSize: 14, textAlign: 'center', marginBottom: 20, color: '#555' },
   modalCloseButton: { backgroundColor: '#3182CE', paddingVertical: 10, paddingHorizontal: 30, borderRadius: 8 }
-});
+}); 
