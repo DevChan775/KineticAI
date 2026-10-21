@@ -1,11 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Modal } from 'react-native';
-import {
-  Camera,
-  useCameraDevice,
-  useCameraPermission,
-  useFrameOutput,
-} from 'react-native-vision-camera';
+import {Camera, useCameraDevice, useCameraPermission, useFrameOutput,} from 'react-native-vision-camera';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
 import * as Speech from 'expo-speech';
 
@@ -190,17 +185,24 @@ export default function App() {
     }
 
     const bytes = new Uint8Array(payload);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i += 1) {
-      binary += String.fromCharCode(bytes[i]);
-    }
 
-    const base64 = globalThis.btoa ? globalThis.btoa(binary) : '';
-    if (base64) {
-      wsRef.current.send(base64);
-      console.log('📸 프레임 전송 성공');
-    }
-  }, []);
+    const toBinaryString = (u8: Uint8Array) => {
+      const chunkSize = 0x8000; // 32KB
+      let binary = '';
+
+      for (let i = 0; i < u8.length; i += chunkSize) {
+        const chunk = u8.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+      
+      return binary;
+   };
+
+  const base64 = globalThis.btoa ? globalThis.btoa(toBinaryString(bytes)) : '';
+  if (base64) {
+    wsRef.current.send(base64);
+  }
+}, []);
 
   const frameOutput = useFrameOutput({
     pixelFormat: 'rgb',
