@@ -47,36 +47,52 @@ async def websocket_video_endpoint(websocket: WebSocket):
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
     
     frame_sequence = deque(maxlen=SEQ_LENGTH)
-    exercise_count = 0  
+    exercise_count = 0
     
     try:
         while True:
-            data = await websocket.receive_text()
-            img_data = base64.b64decode(data)
-            np_arr = np.frombuffer(img_data, np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            
+            raw = await websocket.receive()
+
+            if "text" in raw:
+                payload = raw["text"]
+                if not payload:
+                    continue
+                try:
+                    img_data = base64.b64decode(payload)
+                except Exception:
+                    img_data = payload.encode("latin1")
+            else:
+                payload = raw["bytes"]
+                if not payload:
+                    continue
+                img_data = payload
+
+            try:
+                np_arr = np.frombuffer(img_data, np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            except Exception:
+                continue
+
             if frame is None:
                 continue
 
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
 
-        
             detection_result = detector.detect(mp_image)
 
             if detection_result.pose_landmarks and len(detection_result.pose_landmarks) > 0:
-                landmarks = detection_result.pose_landmarks[0] 
-                
-                def get_pt(idx): 
+                landmarks = detection_result.pose_landmarks[0]
+
+                def get_pt(idx):
                     return [landmarks[idx].x, landmarks[idx].y]
-                
+
                 center_shoulder = [
-                    (landmarks[11].x + landmarks[12].x) / 2, 
+                    (landmarks[11].x + landmarks[12].x) / 2,
                     (landmarks[11].y + landmarks[12].y) / 2
                 ]
                 center_hip = [
-                    (landmarks[23].x + landmarks[24].x) / 2, 
+                    (landmarks[23].x + landmarks[24].x) / 2,
                     (landmarks[23].y + landmarks[24].y) / 2
                 ]
 
@@ -96,31 +112,31 @@ async def websocket_video_endpoint(websocket: WebSocket):
                 r_foot = [(landmarks[28].x + landmarks[32].x) / 2, (landmarks[28].y + landmarks[32].y) / 2]
 
                 keypoints = []
-                keypoints.extend(get_pt(0))   # 1. Nose
-                keypoints.extend(get_pt(2))   # 2. Left Eye
-                keypoints.extend(get_pt(5))   # 3. Right Eye
-                keypoints.extend(get_pt(7))   # 4. Left Ear
-                keypoints.extend(get_pt(8))   # 5. Right Ear
-                keypoints.extend(get_pt(11))  # 6. Left Shoulder
-                keypoints.extend(get_pt(12))  # 7. Right Shoulder
-                keypoints.extend(get_pt(13))  # 8. Left Elbow
-                keypoints.extend(get_pt(14))  # 9. Right Elbow
-                keypoints.extend(get_pt(15))  # 10. Left Wrist
-                keypoints.extend(get_pt(16))  # 11. Right Wrist
-                keypoints.extend(get_pt(23))  # 12. Left Hip
-                keypoints.extend(get_pt(24))  # 13. Right Hip
-                keypoints.extend(get_pt(25))  # 14. Left Knee
-                keypoints.extend(get_pt(26))  # 15. Right Knee
-                keypoints.extend(get_pt(27))  # 16. Left Ankle
-                keypoints.extend(get_pt(28))  # 17. Right Ankle
-                
-                keypoints.extend(neck)        # 18. Neck
-                keypoints.extend(l_palm)      # 19. Left Palm
-                keypoints.extend(r_palm)      # 20. Right Palm
-                keypoints.extend(back)        # 21. Back
-                keypoints.extend(waist)       # 22. Waist
-                keypoints.extend(l_foot)      # 23. Left Foot 
-                keypoints.extend(r_foot)      # 24. Right Foot
+                keypoints.extend(get_pt(0))
+                keypoints.extend(get_pt(2))
+                keypoints.extend(get_pt(5))
+                keypoints.extend(get_pt(7))
+                keypoints.extend(get_pt(8))
+                keypoints.extend(get_pt(11))
+                keypoints.extend(get_pt(12))
+                keypoints.extend(get_pt(13))
+                keypoints.extend(get_pt(14))
+                keypoints.extend(get_pt(15))
+                keypoints.extend(get_pt(16))
+                keypoints.extend(get_pt(23))
+                keypoints.extend(get_pt(24))
+                keypoints.extend(get_pt(25))
+                keypoints.extend(get_pt(26))
+                keypoints.extend(get_pt(27))
+                keypoints.extend(get_pt(28))
+
+                keypoints.extend(neck)
+                keypoints.extend(l_palm)
+                keypoints.extend(r_palm)
+                keypoints.extend(back)
+                keypoints.extend(waist)
+                keypoints.extend(l_foot)
+                keypoints.extend(r_foot)
 
                 frame_sequence.append(keypoints)
 
@@ -128,11 +144,11 @@ async def websocket_video_endpoint(websocket: WebSocket):
                     input_data = np.array(frame_sequence)
                     input_scaled = scaler.transform(input_data)
                     input_final = np.expand_dims(input_scaled, axis=0)
-                    
+
                     prediction = model.predict(input_final, verbose=0)
                     class_idx = np.argmax(prediction)
                     max_prob = float(np.max(prediction))
-                    
+
                     if max_prob >= 0.80:
                         predicted_label = encoder.inverse_transform([class_idx])[0]
                         try:
@@ -157,16 +173,16 @@ async def websocket_video_endpoint(websocket: WebSocket):
                             feedback_msg = f"{condition} 자세를 교정해 주세요."
 
                         await websocket.send_text(json.dumps({
-                            "status": "success", 
+                            "status": "success",
                             "color": border_color,
                             "feedback": feedback_msg,
                             "confidence": f"{max_prob*100:.1f}%",
                             "priority": True
                         }))
-                    
+
                     for _ in range(20):
                         frame_sequence.popleft()
-            
+
     except WebSocketDisconnect:
         print("❌ 핸드폰 앱과의 연결 종료")
     except Exception as e:
