@@ -4,12 +4,14 @@ import numpy as np
 import base64
 import json
 import os
+import time
 import joblib
 import tensorflow as tf
 from collections import deque
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from core.pose_rules import PushUpAnalyzer
 
 router = APIRouter()
 
@@ -40,6 +42,7 @@ except Exception as e:
     print(f"⚠️ 모델/스케일러/인코더 로드 실패: {e}")
 
 SEQ_LENGTH = 60
+push_up_analyzer = PushUpAnalyzer()
 
 @router.websocket("/ws/video")
 async def websocket_video_endpoint(websocket: WebSocket):
@@ -112,23 +115,23 @@ async def websocket_video_endpoint(websocket: WebSocket):
                 r_foot = [(landmarks[28].x + landmarks[32].x) / 2, (landmarks[28].y + landmarks[32].y) / 2]
 
                 keypoints = []
-                keypoints.extend(get_pt(0))
-                keypoints.extend(get_pt(2))
-                keypoints.extend(get_pt(5))
-                keypoints.extend(get_pt(7))
-                keypoints.extend(get_pt(8))
-                keypoints.extend(get_pt(11))
-                keypoints.extend(get_pt(12))
-                keypoints.extend(get_pt(13))
-                keypoints.extend(get_pt(14))
-                keypoints.extend(get_pt(15))
-                keypoints.extend(get_pt(16))
-                keypoints.extend(get_pt(23))
-                keypoints.extend(get_pt(24))
-                keypoints.extend(get_pt(25))
-                keypoints.extend(get_pt(26))
-                keypoints.extend(get_pt(27))
-                keypoints.extend(get_pt(28))
+                keypoints.extend(get_pt(0))   # Nose (x, y)
+                keypoints.extend(get_pt(2))   # Left Eye
+                keypoints.extend(get_pt(5))   # Right Eye
+                keypoints.extend(get_pt(7))   # Left Ear
+                keypoints.extend(get_pt(8))   # Right Ear
+                keypoints.extend(get_pt(11))  # Left Shoulder
+                keypoints.extend(get_pt(12))  # Right Shoulder
+                keypoints.extend(get_pt(13))  # Left Elbow
+                keypoints.extend(get_pt(14))  # Right Elbow
+                keypoints.extend(get_pt(15))  # Left Wrist
+                keypoints.extend(get_pt(16))  # Right Wrist
+                keypoints.extend(get_pt(23))  # Left Hip
+                keypoints.extend(get_pt(24))  # Right Hip
+                keypoints.extend(get_pt(25))  # Left Knee
+                keypoints.extend(get_pt(26))  # Right Knee
+                keypoints.extend(get_pt(27))  # Left Ankle
+                keypoints.extend(get_pt(28))  # Right Ankle
 
                 keypoints.extend(neck)
                 keypoints.extend(l_palm)
@@ -146,7 +149,7 @@ async def websocket_video_endpoint(websocket: WebSocket):
                     input_final = np.expand_dims(input_scaled, axis=0)
 
                     prediction = model.predict(input_final, verbose=0)
-                    class_idx = np.argmax(prediction)
+                    class_idx = np.argmax(prediction)       
                     max_prob = float(np.max(prediction))
 
                     if max_prob >= 0.80:
@@ -157,28 +160,31 @@ async def websocket_video_endpoint(websocket: WebSocket):
                             exercise_name = predicted_label
                             condition = "알 수 없음"
 
-                        exercise_count += 1
-                        await websocket.send_text(json.dumps({
-                            "status": "count",
-                            "count": exercise_count,
-                            "type": "count",
-                            "priority": 0
-                        }))
+                        normalized_name = exercise_name.lower().replace(" ", "_")
 
-                        if condition == '정답':
-                            border_color = "blue"
-                            feedback_msg = "좋은 자세입니다!"
+                        if normalized_name in {"push_up", "pushup"}:
+                            push_up_count, push_up_feedback = push_up_analyzer.evaluate(
+                                landmarks,
+                                timestamp=time.monotonic(),
+                            )
+
+                            if push_up_feedback == "COUNT_SUCCESS":
+                                exercise_count = push_up_count
+                                await websocket.send_text(json.dumps({
+                                    "status": "count",
+                                    "count": exercise_count,
+                                    "type": "count",
+                                    "priority": 0
+                                }))
+                            elif push_up_feedback:
+                                await websocket.send_text(json.dumps({
+                                    "status": "feedback",
+                                    "feedback": push_up_feedback,
+                                    "priority": True
+                                }))
                         else:
-                            border_color = "red"
-                            feedback_msg = f"{condition} 자세를 교정해 주세요."
-
-                        await websocket.send_text(json.dumps({
-                            "status": "success",
-                            "color": border_color,
-                            "feedback": feedback_msg,
-                            "confidence": f"{max_prob*100:.1f}%",
-                            "priority": True
-                        }))
+                            # 푸시업만 테스트 중이므로 비푸시업 운동은 임시 로직을 사용하지 않음
+                            pass
 
                     for _ in range(20):
                         frame_sequence.popleft()
