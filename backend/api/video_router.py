@@ -26,10 +26,10 @@ if not os.path.exists(model_asset_path):
 base_options = python.BaseOptions(model_asset_path=model_asset_path)
 options = vision.PoseLandmarkerOptions(
     base_options=base_options,
-    running_mode=vision.RunningMode.IMAGE,
-    min_pose_detection_confidence=0.5,
-    min_pose_presence_confidence=0.5,
-    min_tracking_confidence=0.5
+    running_mode=vision.RunningMode.VIDEO,
+    min_pose_detection_confidence=0.3,
+    min_pose_presence_confidence=0.3,
+    min_tracking_confidence=0.3 
 )
 detector = vision.PoseLandmarker.create_from_options(options)
 
@@ -54,21 +54,16 @@ async def websocket_video_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            raw = await websocket.receive()
-
-            if "text" in raw:
-                payload = raw["text"]
+            try:
+                # 텍스트(Base64) 데이터만 안전하게 바로 받습니다.
+                payload = await websocket.receive_text()
                 if not payload:
                     continue
-                try:
-                    img_data = base64.b64decode(payload)
-                except Exception:
-                    img_data = payload.encode("latin1")
-            else:
-                payload = raw["bytes"]
-                if not payload:
-                    continue
-                img_data = payload
+                img_data = base64.b64decode(payload)
+        
+            except Exception as e:
+                # 연결 종료 등 정상적인 이탈은 예외 처리로 조용히 넘깁니다.
+                break
 
             try:
                 np_arr = np.frombuffer(img_data, np.uint8)
@@ -82,9 +77,12 @@ async def websocket_video_endpoint(websocket: WebSocket):
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
 
-            detection_result = detector.detect(mp_image)
+            current_timestamp_ms = int(time.time() * 1000)
+
+            detection_result = detector.detect_for_video(mp_image, current_timestamp_ms)
 
             if detection_result.pose_landmarks and len(detection_result.pose_landmarks) > 0:
+                print("✅ 사람의 포즈(랜드마크) 감지 성공!")
                 landmarks = detection_result.pose_landmarks[0]
 
                 def get_pt(idx):
@@ -149,20 +147,25 @@ async def websocket_video_endpoint(websocket: WebSocket):
                     input_final = np.expand_dims(input_scaled, axis=0)
 
                     prediction = model.predict(input_final, verbose=0)
-                    class_idx = np.argmax(prediction)       
+                    class_idx = np.argmax(prediction)
                     max_prob = float(np.max(prediction))
 
-                    if max_prob >= 0.80:
-                        predicted_label = encoder.inverse_transform([class_idx])[0]
-                        try:
-                            exercise_name, condition = predicted_label.split('_', 1)
-                        except ValueError:
-                            exercise_name = predicted_label
-                            condition = "알 수 없음"
+                    if max_prob >= 0.50:
+                        predicted_label = str(encoder.inverse_transform([class_idx])[0]).strip()
+                        normalized_name = predicted_label.lower().replace(" ", "_").replace("-", "_")
 
-                        normalized_name = exercise_name.lower().replace(" ", "_")
+                        # 실제 라벨 예시: 'push_up_correct', 'push_up_incorrect', 'pushup_correct'
+                        # 단순 split('_', 1)은 'push'만 남아서 푸시업 판별이 실패한다.
+                        if normalized_name.endswith("_correct") or normalized_name.endswith("_incorrect"):
+                            normalized_name = normalized_name.rsplit("_", 1)[0]
 
-                        if normalized_name in {"push_up", "pushup"}:
+                        is_push_up = (
+                            normalized_name in {"push_up", "pushup"}
+                            or normalized_name.startswith("push_up")
+                            or normalized_name.startswith("pushup")
+                        )
+
+                        if is_push_up:
                             push_up_count, push_up_feedback = push_up_analyzer.evaluate(
                                 landmarks,
                                 timestamp=time.monotonic(),
@@ -183,11 +186,12 @@ async def websocket_video_endpoint(websocket: WebSocket):
                                     "priority": True
                                 }))
                         else:
-                            # 푸시업만 테스트 중이므로 비푸시업 운동은 임시 로직을 사용하지 않음
-                            pass
+                            print(f"ℹ️ 예측 라벨: {predicted_label} (푸시업 판별 제외)")
 
                     for _ in range(20):
                         frame_sequence.popleft()
+            else:
+                print("❌ 포즈 감지 실패 (화면에 전신이 나오지 않거나 자세 인식 불가)")
 
     except WebSocketDisconnect:
         print("❌ 핸드폰 앱과의 연결 종료")

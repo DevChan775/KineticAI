@@ -4,7 +4,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 
 def calculate_angle(a, b, c):
-    """세 점 a, b, c를 받아 b를 기준으로 사잇각(0~180도)을 계산합니다."""
+    """세 점 a, b, c를 받아 b를 기준으로 사잇각(0~180도)을 계산"""
     ax, ay = a
     bx, by = b
     cx, cy = c
@@ -121,11 +121,12 @@ class PushUpAnalyzer:
             return self.count, "허리가 처졌습니다"
 
         if elbow_angle is None:
-            return self.count, ""
+            return self.count, "팔 각도를 측정할 수 없습니다"
 
+        # 푸시업은 팔이 많이 구부러진 상태(하강) -> 팔이 편 상태(상승) 순서로 한 회가 끝난다.
         if elbow_angle <= 90:
             self._down_completed = True
-            return self.count, ""
+            return self.count, "팔을 내리고 있습니다. 몸을 더 낮게 내려가세요"
 
         if elbow_angle >= 150:
             if self._down_completed:
@@ -135,11 +136,11 @@ class PushUpAnalyzer:
                     self._down_completed = False
                     return self.count, "COUNT_SUCCESS"
                 self._down_completed = False
-                return self.count, ""
-            return self.count, "더 깊게 내려가세요"
+                return self.count, "한 번 완료되었습니다"
+            return self.count, "팔을 완전히 펴세요"
 
         self._down_completed = False
-        return self.count, ""
+        return self.count, "팔을 더 편하게 펴세요"
 
     def evaluate_pushup(self, landmarks, timestamp=None):
         return self.evaluate(landmarks, timestamp=timestamp)
