@@ -6,7 +6,7 @@ import json
 import os
 import time
 import joblib
-import tensorflow as tf
+import tensorflow as tf 
 from collections import deque
 import mediapipe as mp
 from mediapipe.tasks import python
@@ -49,13 +49,12 @@ async def websocket_video_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
     
-    frame_sequence = deque(maxlen=SEQ_LENGTH)
+    frame_sequence = deque(maxlen=SEQ_LENGTH)   
     exercise_count = 0
     
     try:
         while True:
             try:
-                # 텍스트(Base64) 데이터만 안전하게 바로 받습니다.
                 payload = await websocket.receive_text()
                 if not payload:
                     continue
@@ -154,12 +153,12 @@ async def websocket_video_endpoint(websocket: WebSocket):
                         predicted_label = str(encoder.inverse_transform([class_idx])[0]).strip()
                         normalized_name = predicted_label.lower().replace(" ", "_").replace("-", "_")
 
-                        # 실제 라벨 예시: 'push_up_correct', 'push_up_incorrect', 'pushup_correct'
+                        # 실제 라벨 예시: 'push_up_correct', 'push_up_incorrect', 
                         # 단순 split('_', 1)은 'push'만 남아서 푸시업 판별이 실패한다.
                         if normalized_name.endswith("_correct") or normalized_name.endswith("_incorrect"):
                             normalized_name = normalized_name.rsplit("_", 1)[0]
 
-                        is_push_up = (
+                        is_push_up = ( 
                             normalized_name in {"push_up", "pushup"}
                             or normalized_name.startswith("push_up")
                             or normalized_name.startswith("pushup")
@@ -177,13 +176,16 @@ async def websocket_video_endpoint(websocket: WebSocket):
                                     "status": "count",
                                     "count": exercise_count,
                                     "type": "count",
+                                    "signal": "COUNT_SUCCESS",
                                     "priority": 0
                                 }))
                             elif push_up_feedback:
                                 await websocket.send_text(json.dumps({
                                     "status": "feedback",
                                     "feedback": push_up_feedback,
-                                    "priority": True
+                                    "type": "feedback",
+                                    "signal": "FEEDBACK",
+                                    "priority": 100
                                 }))
                         else:
                             print(f"ℹ️ 예측 라벨: {predicted_label} (푸시업 판별 제외)")

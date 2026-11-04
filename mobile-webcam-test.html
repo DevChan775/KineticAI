@@ -239,6 +239,11 @@
       let countdownTimer = null;
       let countdownValue = 10;
       let currentFeedback = '원하는 운동을 고르고 촬영을 시작하세요.';
+      const speechState = {
+        currentType: null,
+        feedbackActive: false,
+        lastCount: 0
+      };  
 
       function renderExercises() {
         exerciseRow.innerHTML = '';
@@ -271,7 +276,7 @@
 
         socket = new WebSocket('ws://localhost:8000/api/video/ws/video');
 
-        socket.onopen = () => {
+        socket.onopen = () => { 
           console.log('백엔드 WebSocket 연결 성공');
           updateStatus(true);
         };
@@ -294,18 +299,39 @@
         socket.onmessage = (event) => {
           try {
             const result = JSON.parse(event.data);
+            const priority = Number(result.priority ?? 0);
             console.log('WebSocket 메시지 수신:', result);
 
-            if (result.status === 'count' || result.type === 'count') {
+            const isFeedbackMessage =
+              result.status === 'feedback' ||
+              result.type === 'feedback' ||
+              Boolean(result.feedback) ||
+              priority >= 100;
+
+            const isCountMessage =
+              result.status === 'count' ||
+              result.type === 'count' ||
+              result.signal === 'COUNT_SUCCESS' ||
+              priority === 0;
+
+            if (isCountMessage && !isFeedbackMessage) {
               const count = Number(result.count || 0);
               countLabel.style.display = 'block';
               countLabel.textContent = `현재 횟수: ${count}`;
               feedbackMessage.textContent = `푸시업 ${count}회`;
-              speakText(`푸시업 ${toKoreanCount(count)} 회`, { rate: 1.0, pitch: 1.0 });
+              speechState.lastCount = count;
+
+              if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
+                console.log('피드백 중이므로 카운트 발화는 스킵합니다.');
+                return;
+              }
+
+              const spokenText = `푸시업 ${toKoreanCount(count)} 회`;
+              speakText(spokenText, { type: 'count', rate: 1.0, pitch: 1.0 });
               return;
             }
 
-            if (result.status === 'feedback' || result.feedback) {
+            if (isFeedbackMessage) {
               const msg = result.feedback || result.message || '자세를 확인해주세요.';
               feedbackMessage.textContent = msg;
               currentFeedback = msg;
@@ -401,30 +427,59 @@
       }
 
       function speakText(text, options = {}) {
-        const { rate = 1, pitch = 1 } = options;
+        const { type = 'count', rate = 1, pitch = 1 } = options;
         if (!text) return;
 
-        if ('speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = 'ko-KR';
-          utterance.rate = rate;
-          utterance.pitch = pitch;
-          utterance.volume = 1;
-          window.speechSynthesis.speak(utterance);
+        if (!('speechSynthesis' in window)) {
+          console.warn('브라우저 음성 API가 지원되지 않습니다.');
           return;
         }
 
-        console.warn('브라우저 음성 API가 지원되지 않습니다.');
+        if (type === 'count') {
+          if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
+            console.log('피드백이 재생 중이라 카운트 발화는 스킵합니다.');
+            return;
+          }
+
+          if (speechState.currentType === 'count') {
+            console.log('동일 카운트 발화가 이미 재생 중이라 스킵합니다.');
+            return;
+          }
+        }
+
+        if (type === 'feedback' && speechState.currentType === 'count') {
+          window.speechSynthesis.cancel();
+        }
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ko-KR';
+        utterance.rate = rate;
+        utterance.pitch = pitch;
+        utterance.volume = 1;
+
+        utterance.onstart = () => {
+          speechState.currentType = type;
+          speechState.feedbackActive = type === 'feedback';
+        };
+
+        utterance.onend = () => {
+          if (speechState.currentType === type) {
+            speechState.currentType = null; 
+          }
+          speechState.feedbackActive = false;
+        };
+
+        utterance.onerror = utterance.onend;
+        window.speechSynthesis.speak(utterance);
       }
 
       function speakCountdown(count) {
         if (count <= 0) return;
-        speakText(String(count), { rate: 1.0, pitch: 1.0 });
+        speakText(String(count), { type: 'count', rate: 1.0, pitch: 1.0 });
       }
 
       function speakExerciseFeedback(text) {
-        speakText(text, { rate: 1.0, pitch: 1.2 });
+        speakText(text, { type: 'feedback', rate: 1.0, pitch: 1.2 });
       }
 
       function startCountdown() {
