@@ -94,14 +94,14 @@
         padding: 18px 16px 0;
         z-index: 3;
       }
-
+ 
       .exercise-row {
         display: flex;
         flex-wrap: wrap;
         justify-content: center;
         gap: 8px;
       }
-
+ 
       .exercise-btn {
         background: rgba(15, 23, 42, 0.62);
         color: var(--white);
@@ -214,7 +214,7 @@
             <div class="count-label" id="countLabel" style="display: none;">0</div>
           </div>
         </div>
-
+        
         <div class="bottom-panel">
           <button id="toggleBtn" class="action-btn">촬영 시작</button>
         </div>
@@ -239,11 +239,16 @@
       let countdownTimer = null;
       let countdownValue = 10;
       let currentFeedback = '원하는 운동을 고르고 촬영을 시작하세요.';
+
       const speechState = {
         currentType: null,
         feedbackActive: false,
+        feedbackQueue: [],
+        feedbackDelayTimer: null,
+        pendingCount: null,
+        latestSkippedCount: null,
         lastCount: 0
-      };  
+      };
 
       function renderExercises() {
         exerciseRow.innerHTML = '';
@@ -271,12 +276,22 @@
         statusBadge.className = `status-badge ${connected ? 'live' : 'offline'}`;
       }
 
+      function updateCountUi(count) {
+        const normalized = Number(count);
+        if (!Number.isFinite(normalized) || normalized < 0) return;
+
+        countLabel.style.display = 'block';
+        countLabel.textContent = `현재 횟수: ${normalized}`;
+        feedbackMessage.textContent = `푸시업 ${normalized}회`;
+        speechState.lastCount = normalized;
+      }
+
       function ensureSocket() {
         if (socket && socket.readyState === WebSocket.OPEN) return socket;
 
         socket = new WebSocket('ws://localhost:8000/api/video/ws/video');
 
-        socket.onopen = () => { 
+        socket.onopen = () => {
           console.log('백엔드 WebSocket 연결 성공');
           updateStatus(true);
         };
@@ -287,6 +302,7 @@
           isStreaming = false;
           toggleBtn.textContent = '촬영 시작';
           toggleBtn.classList.remove('stop');
+          stopSpeechQueue();
           stopCamera();
         };
 
@@ -315,19 +331,22 @@
               priority === 0;
 
             if (isCountMessage && !isFeedbackMessage) {
-              const count = Number(result.count || 0);
-              countLabel.style.display = 'block';
-              countLabel.textContent = `현재 횟수: ${count}`;
-              feedbackMessage.textContent = `푸시업 ${count}회`;
-              speechState.lastCount = count;
+              const count = Number(result.count ?? 0);
+              updateCountUi(count);
 
               if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
-                console.log('피드백 중이므로 카운트 발화는 스킵합니다.');
+                speechState.latestSkippedCount = count;
+                console.log('피드백 중이므로 이번 카운트 발화는 스킵하고 최신 값만 저장합니다.');
                 return;
               }
 
-              const spokenText = `푸시업 ${toKoreanCount(count)} 회`;
-              speakText(spokenText, { type: 'count', rate: 1.0, pitch: 1.0 });
+              if (speechState.currentType === 'count') {
+                speechState.pendingCount = count;
+                console.log('카운트 발화 중이므로 최신 값으로 대체합니다.');
+                return;
+              }
+
+              triggerCountSpeech(count);
               return;
             }
 
@@ -426,8 +445,143 @@
         return map[value] ?? String(value);
       }
 
+      function triggerCountSpeech(count) {
+        const normalized = Number(count);
+        if (!Number.isFinite(normalized) || normalized < 0) return;
+
+        if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
+          speechState.latestSkippedCount = normalized;
+          console.log('피드백 중이라 이번 카운트는 스킵하고 최신 값만 저장합니다.');
+          return;
+        }
+
+        if (speechState.currentType === 'count') {
+          speechState.pendingCount = normalized;
+          console.log('카운트 발화 중이라 최근 값을 대기열로 저장합니다.');
+          return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(`푸시업 ${toKoreanCount(normalized)} 회`);
+        utterance.lang = 'ko-KR';
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1;
+
+        utterance.onstart = () => {
+          speechState.currentType = 'count';
+          speechState.feedbackActive = false;
+        };
+
+        utterance.onend = () => {
+          if (speechState.currentType === 'count') {
+            speechState.currentType = null;
+          }
+
+          if (speechState.pendingCount !== null) {
+            const nextCount = speechState.pendingCount;
+            speechState.pendingCount = null;
+            triggerCountSpeech(nextCount);
+            return;
+          }
+
+          if (speechState.feedbackQueue.length > 0) {
+            const queuedFeedback = speechState.feedbackQueue.shift();
+            scheduleFeedbackPlayback(queuedFeedback);
+          }
+        };
+
+        utterance.onerror = utterance.onend;
+        window.speechSynthesis.speak(utterance);
+      }
+
+      function scheduleFeedbackPlayback(text) {
+        if (!text) return;
+
+        if (speechState.feedbackDelayTimer) {
+          clearTimeout(speechState.feedbackDelayTimer);
+        }
+
+        speechState.feedbackDelayTimer = setTimeout(() => {
+          speechState.feedbackDelayTimer = null;
+
+          if (speechState.currentType === 'count' || speechState.feedbackActive) {
+            speechState.feedbackQueue.push(String(text));
+            return;
+          }
+
+          playFeedbackUtterance(String(text));
+        }, 1000);
+      }
+
+      function playFeedbackUtterance(text) {
+        if (!text) return;
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ko-KR';
+        utterance.rate = 1.0;
+        utterance.pitch = 1.2;
+        utterance.volume = 1;
+
+        utterance.onstart = () => {
+          speechState.currentType = 'feedback';
+          speechState.feedbackActive = true;
+        };
+
+        utterance.onend = () => {
+          if (speechState.currentType === 'feedback') {
+            speechState.currentType = null;
+          }
+          speechState.feedbackActive = false;
+
+          if (speechState.latestSkippedCount !== null) {
+            const nextCount = speechState.latestSkippedCount;
+            speechState.latestSkippedCount = null;
+            triggerCountSpeech(nextCount);
+            return;
+          }
+
+          if (speechState.feedbackQueue.length > 0) {
+            const nextFeedback = speechState.feedbackQueue.shift();
+            scheduleFeedbackPlayback(nextFeedback);
+          }
+        };
+
+        utterance.onerror = utterance.onend;
+        window.speechSynthesis.speak(utterance);
+      }
+
+      function speakExerciseFeedback(text) {
+        if (!text) return;
+
+        speechState.feedbackQueue.push(String(text));
+
+        if (speechState.currentType === 'count' || speechState.feedbackActive || speechState.currentType === 'feedback') {
+          return;
+        }
+
+        const nextFeedback = speechState.feedbackQueue.shift();
+        scheduleFeedbackPlayback(nextFeedback);
+      }
+
+      function stopSpeechQueue() {
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+        }
+
+        if (speechState.feedbackDelayTimer) {
+          clearTimeout(speechState.feedbackDelayTimer);
+          speechState.feedbackDelayTimer = null;
+        }
+
+        speechState.currentType = null;
+        speechState.feedbackActive = false;
+        speechState.feedbackQueue = [];
+        speechState.pendingCount = null;
+        speechState.latestSkippedCount = null;
+      }
+
       function speakText(text, options = {}) {
-        const { type = 'count', rate = 1, pitch = 1 } = options;
+        const { rate = 1, pitch = 1 } = options;
         if (!text) return;
 
         if (!('speechSynthesis' in window)) {
@@ -435,51 +589,17 @@
           return;
         }
 
-        if (type === 'count') {
-          if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
-            console.log('피드백이 재생 중이라 카운트 발화는 스킵합니다.');
-            return;
-          }
-
-          if (speechState.currentType === 'count') {
-            console.log('동일 카운트 발화가 이미 재생 중이라 스킵합니다.');
-            return;
-          }
-        }
-
-        if (type === 'feedback' && speechState.currentType === 'count') {
-          window.speechSynthesis.cancel();
-        }
-
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ko-KR';
         utterance.rate = rate;
         utterance.pitch = pitch;
         utterance.volume = 1;
-
-        utterance.onstart = () => {
-          speechState.currentType = type;
-          speechState.feedbackActive = type === 'feedback';
-        };
-
-        utterance.onend = () => {
-          if (speechState.currentType === type) {
-            speechState.currentType = null; 
-          }
-          speechState.feedbackActive = false;
-        };
-
-        utterance.onerror = utterance.onend;
         window.speechSynthesis.speak(utterance);
       }
 
       function speakCountdown(count) {
         if (count <= 0) return;
-        speakText(String(count), { type: 'count', rate: 1.0, pitch: 1.0 });
-      }
-
-      function speakExerciseFeedback(text) {
-        speakText(text, { type: 'feedback', rate: 1.0, pitch: 1.2 });
+        speakText(String(count), { rate: 1.0, pitch: 1.0 });
       }
 
       function startCountdown() {
@@ -519,6 +639,7 @@
         if (isStreaming) {
           stopCamera();
           stopCountdown();
+          stopSpeechQueue();
           if (socket && socket.readyState === WebSocket.OPEN) {
             socket.close();
           }
