@@ -240,14 +240,11 @@
       let countdownValue = 10;
       let currentFeedback = '원하는 운동을 고르고 촬영을 시작하세요.';
 
-      const speechState = {
-        currentType: null,
-        feedbackActive: false,
-        feedbackQueue: [],
-        feedbackDelayTimer: null,
-        pendingCount: null,
-        latestSkippedCount: null,
-        lastCount: 0
+      const metronomeState = {
+        timerId: null,
+        cycleIndex: 0,
+        intervalMs: 1500,
+        audioCtx: null
       };
 
       function renderExercises() {
@@ -282,8 +279,91 @@
 
         countLabel.style.display = 'block';
         countLabel.textContent = `현재 횟수: ${normalized}`;
-        feedbackMessage.textContent = `푸시업 ${normalized}회`;
-        speechState.lastCount = normalized;
+        feedbackMessage.textContent = `${selectedExercise} ${normalized}회`;
+      }
+
+      function ensureAudioContext() {
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtor) return null;
+
+        if (!metronomeState.audioCtx) {
+          metronomeState.audioCtx = new AudioCtor();
+        }
+
+        if (metronomeState.audioCtx.state === 'suspended') {
+          metronomeState.audioCtx.resume();
+        }
+
+        return metronomeState.audioCtx;
+      }
+
+      function playClickTone(frequency = 880, duration = 0.12, volume = 0.06) {
+        const audioContext = ensureAudioContext();
+        if (!audioContext) return;
+
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.type = 'square';
+        oscillator.frequency.value = frequency;
+
+        gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + duration + 0.02);
+      }
+
+      function toKoreanCount(value) {
+        const map = ['영', '하나', '둘', '셋', '넷', '다섯', '여섯', '일곱', '여덟', '아홉', '열', '열하나', '열둘', '열셋', '열넷', '열다섯', '열여섯', '열일곱', '열여덟', '열아홉', '스물'];
+        return map[value] ?? String(value);
+      }
+
+      function speakNumber(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 1) return;
+
+        if (!('speechSynthesis' in window)) return;
+
+        const utterance = new SpeechSynthesisUtterance(toKoreanCount(number));
+        utterance.lang = 'ko-KR';
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      }
+
+      function runMetronomeCycle() {
+        const countNumber = ((metronomeState.cycleIndex % 20) + 1);
+        metronomeState.cycleIndex += 1;
+
+        setTimeout(() => playClickTone(880, 0.12, 0.08), 0);
+        setTimeout(() => playClickTone(880, 0.12, 0.08), 260);
+        setTimeout(() => speakNumber(countNumber), 640);
+      }
+
+      function startMetronome() {
+        stopMetronome();
+        metronomeState.cycleIndex = 0;
+        runMetronomeCycle();
+        metronomeState.timerId = setInterval(() => {
+          runMetronomeCycle();
+        }, metronomeState.intervalMs);
+      }
+
+      function stopMetronome() {
+        if (metronomeState.timerId) {
+          clearInterval(metronomeState.timerId);
+          metronomeState.timerId = null;
+        }
+
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+        }
       }
 
       function ensureSocket() {
@@ -302,7 +382,7 @@
           isStreaming = false;
           toggleBtn.textContent = '촬영 시작';
           toggleBtn.classList.remove('stop');
-          stopSpeechQueue();
+          stopMetronome();
           stopCamera();
         };
 
@@ -315,47 +395,11 @@
         socket.onmessage = (event) => {
           try {
             const result = JSON.parse(event.data);
-            const priority = Number(result.priority ?? 0);
-            console.log('WebSocket 메시지 수신:', result);
-
-            const isFeedbackMessage =
-              result.status === 'feedback' ||
-              result.type === 'feedback' ||
-              Boolean(result.feedback) ||
-              priority >= 100;
-
-            const isCountMessage =
-              result.status === 'count' ||
-              result.type === 'count' ||
-              result.signal === 'COUNT_SUCCESS' ||
-              priority === 0;
-
-            if (isCountMessage && !isFeedbackMessage) {
+            if (result.status === 'count' || result.type === 'count' || result.signal === 'COUNT_SUCCESS') {
               const count = Number(result.count ?? 0);
-              updateCountUi(count);
-
-              if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
-                speechState.latestSkippedCount = count;
-                console.log('피드백 중이므로 이번 카운트 발화는 스킵하고 최신 값만 저장합니다.');
-                return;
+              if (Number.isFinite(count) && count >= 0) {
+                updateCountUi(count);
               }
-
-              if (speechState.currentType === 'count') {
-                speechState.pendingCount = count;
-                console.log('카운트 발화 중이므로 최신 값으로 대체합니다.');
-                return;
-              }
-
-              triggerCountSpeech(count);
-              return;
-            }
-
-            if (isFeedbackMessage) {
-              const msg = result.feedback || result.message || '자세를 확인해주세요.';
-              feedbackMessage.textContent = msg;
-              currentFeedback = msg;
-              updateBorder(result.color || 'transparent');
-              speakExerciseFeedback(msg);
             }
           } catch (error) {
             console.log('WebSocket 메시지 파싱 실패:', error);
@@ -385,6 +429,7 @@
           await video.play();
           ensureSocket();
           startFrameLoop();
+          startMetronome();
           isStreaming = true;
           toggleBtn.textContent = '촬영 중지';
           toggleBtn.classList.add('stop');
@@ -411,6 +456,7 @@
           video.srcObject = null;
         }
 
+        stopMetronome();
         isStreaming = false;
         countLabel.style.display = 'none';
         updateBorder('transparent');
@@ -440,166 +486,10 @@
         frameTimer = setInterval(sendFrameToServer, 200);
       }
 
-      function toKoreanCount(value) {
-        const map = ['영', '하나', '둘', '셋', '넷', '다섯', '여섯', '일곱', '여덟', '아홉', '열', '열하나', '열둘', '열셋', '열넷', '열다섯', '열여섯', '열일곱', '열여덟', '열아홉', '스물'];
-        return map[value] ?? String(value);
-      }
-
-      function triggerCountSpeech(count) {
-        const normalized = Number(count);
-        if (!Number.isFinite(normalized) || normalized < 0) return;
-
-        if (speechState.currentType === 'feedback' || speechState.feedbackActive) {
-          speechState.latestSkippedCount = normalized;
-          console.log('피드백 중이라 이번 카운트는 스킵하고 최신 값만 저장합니다.');
-          return;
-        }
-
-        if (speechState.currentType === 'count') {
-          speechState.pendingCount = normalized;
-          console.log('카운트 발화 중이라 최근 값을 대기열로 저장합니다.');
-          return;
-        }
-
-        const utterance = new SpeechSynthesisUtterance(`푸시업 ${toKoreanCount(normalized)} 회`);
-        utterance.lang = 'ko-KR';
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        utterance.volume = 1;
-
-        utterance.onstart = () => {
-          speechState.currentType = 'count';
-          speechState.feedbackActive = false;
-        };
-
-        utterance.onend = () => {
-          if (speechState.currentType === 'count') {
-            speechState.currentType = null;
-          }
-
-          if (speechState.pendingCount !== null) {
-            const nextCount = speechState.pendingCount;
-            speechState.pendingCount = null;
-            triggerCountSpeech(nextCount);
-            return;
-          }
-
-          if (speechState.feedbackQueue.length > 0) {
-            const queuedFeedback = speechState.feedbackQueue.shift();
-            scheduleFeedbackPlayback(queuedFeedback);
-          }
-        };
-
-        utterance.onerror = utterance.onend;
-        window.speechSynthesis.speak(utterance);
-      }
-
-      function scheduleFeedbackPlayback(text) {
-        if (!text) return;
-
-        if (speechState.feedbackDelayTimer) {
-          clearTimeout(speechState.feedbackDelayTimer);
-        }
-
-        speechState.feedbackDelayTimer = setTimeout(() => {
-          speechState.feedbackDelayTimer = null;
-
-          if (speechState.currentType === 'count' || speechState.feedbackActive) {
-            speechState.feedbackQueue.push(String(text));
-            return;
-          }
-
-          playFeedbackUtterance(String(text));
-        }, 1000);
-      }
-
-      function playFeedbackUtterance(text) {
-        if (!text) return;
-
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'ko-KR';
-        utterance.rate = 1.0;
-        utterance.pitch = 1.2;
-        utterance.volume = 1;
-
-        utterance.onstart = () => {
-          speechState.currentType = 'feedback';
-          speechState.feedbackActive = true;
-        };
-
-        utterance.onend = () => {
-          if (speechState.currentType === 'feedback') {
-            speechState.currentType = null;
-          }
-          speechState.feedbackActive = false;
-
-          if (speechState.latestSkippedCount !== null) {
-            const nextCount = speechState.latestSkippedCount;
-            speechState.latestSkippedCount = null;
-            triggerCountSpeech(nextCount);
-            return;
-          }
-
-          if (speechState.feedbackQueue.length > 0) {
-            const nextFeedback = speechState.feedbackQueue.shift();
-            scheduleFeedbackPlayback(nextFeedback);
-          }
-        };
-
-        utterance.onerror = utterance.onend;
-        window.speechSynthesis.speak(utterance);
-      }
-
-      function speakExerciseFeedback(text) {
-        if (!text) return;
-
-        speechState.feedbackQueue.push(String(text));
-
-        if (speechState.currentType === 'count' || speechState.feedbackActive || speechState.currentType === 'feedback') {
-          return;
-        }
-
-        const nextFeedback = speechState.feedbackQueue.shift();
-        scheduleFeedbackPlayback(nextFeedback);
-      }
-
       function stopSpeechQueue() {
         if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
         }
-
-        if (speechState.feedbackDelayTimer) {
-          clearTimeout(speechState.feedbackDelayTimer);
-          speechState.feedbackDelayTimer = null;
-        }
-
-        speechState.currentType = null;
-        speechState.feedbackActive = false;
-        speechState.feedbackQueue = [];
-        speechState.pendingCount = null;
-        speechState.latestSkippedCount = null;
-      }
-
-      function speakText(text, options = {}) {
-        const { rate = 1, pitch = 1 } = options;
-        if (!text) return;
-
-        if (!('speechSynthesis' in window)) {
-          console.warn('브라우저 음성 API가 지원되지 않습니다.');
-          return;
-        }
-
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'ko-KR';
-        utterance.rate = rate;
-        utterance.pitch = pitch;
-        utterance.volume = 1;
-        window.speechSynthesis.speak(utterance);
-      }
-
-      function speakCountdown(count) {
-        if (count <= 0) return;
-        speakText(String(count), { rate: 1.0, pitch: 1.0 });
       }
 
       function startCountdown() {
@@ -607,22 +497,17 @@
 
         countdownValue = 10;
         feedbackMessage.textContent = '운동을 준비하세요. 10초 뒤 촬영을 시작합니다.';
-        speakText('운동을 준비하세요. 10초 카운트다운을 시작합니다.');
 
         countdownTimer = setInterval(() => {
           countdownValue -= 1;
           if (countdownValue > 0) {
             feedbackMessage.textContent = `준비: ${countdownValue}초`;
-            if (countdownValue <= 3) {
-              speakCountdown(countdownValue);
-            }
           }
 
           if (countdownValue <= 0) {
             clearInterval(countdownTimer);
             countdownTimer = null;
             feedbackMessage.textContent = '촬영을 시작합니다.';
-            speakText('촬영을 시작합니다.');
             startCamera();
           }
         }, 1000);

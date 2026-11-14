@@ -44,14 +44,15 @@ except Exception as e:
 SEQ_LENGTH = 60
 push_up_analyzer = PushUpAnalyzer()
 
+
 @router.websocket("/ws/video")
 async def websocket_video_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
-    
-    frame_sequence = deque(maxlen=SEQ_LENGTH)   
+
+    frame_sequence = deque(maxlen=SEQ_LENGTH)
     exercise_count = 0
-    
+
     try:
         while True:
             try:
@@ -59,9 +60,7 @@ async def websocket_video_endpoint(websocket: WebSocket):
                 if not payload:
                     continue
                 img_data = base64.b64decode(payload)
-        
-            except Exception as e:
-                # 연결 종료 등 정상적인 이탈은 예외 처리로 조용히 넘깁니다.
+            except Exception:
                 break
 
             try:
@@ -75,13 +74,10 @@ async def websocket_video_endpoint(websocket: WebSocket):
 
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-
             current_timestamp_ms = int(time.time() * 1000)
-
             detection_result = detector.detect_for_video(mp_image, current_timestamp_ms)
 
             if detection_result.pose_landmarks and len(detection_result.pose_landmarks) > 0:
-                print("✅ 사람의 포즈(랜드마크) 감지 성공!")
                 landmarks = detection_result.pose_landmarks[0]
 
                 def get_pt(idx):
@@ -89,21 +85,21 @@ async def websocket_video_endpoint(websocket: WebSocket):
 
                 center_shoulder = [
                     (landmarks[11].x + landmarks[12].x) / 2,
-                    (landmarks[11].y + landmarks[12].y) / 2
+                    (landmarks[11].y + landmarks[12].y) / 2,
                 ]
                 center_hip = [
                     (landmarks[23].x + landmarks[24].x) / 2,
-                    (landmarks[23].y + landmarks[24].y) / 2
+                    (landmarks[23].y + landmarks[24].y) / 2,
                 ]
 
                 neck = center_shoulder
                 back = [
-                    center_shoulder[0] + (center_hip[0] - center_shoulder[0]) * (1/3),
-                    center_shoulder[1] + (center_hip[1] - center_shoulder[1]) * (1/3)
+                    center_shoulder[0] + (center_hip[0] - center_shoulder[0]) * (1 / 3),
+                    center_shoulder[1] + (center_hip[1] - center_shoulder[1]) * (1 / 3),
                 ]
                 waist = [
-                    center_shoulder[0] + (center_hip[0] - center_shoulder[0]) * (2/3),
-                    center_shoulder[1] + (center_hip[1] - center_shoulder[1]) * (2/3)
+                    center_shoulder[0] + (center_hip[0] - center_shoulder[0]) * (2 / 3),
+                    center_shoulder[1] + (center_hip[1] - center_shoulder[1]) * (2 / 3),
                 ]
 
                 l_palm = [(landmarks[15].x + landmarks[19].x) / 2, (landmarks[15].y + landmarks[19].y) / 2]
@@ -158,37 +154,35 @@ async def websocket_video_endpoint(websocket: WebSocket):
                         if normalized_name.endswith("_correct") or normalized_name.endswith("_incorrect"):
                             normalized_name = normalized_name.rsplit("_", 1)[0]
 
-                        is_push_up = ( 
+                        is_push_up = (
                             normalized_name in {"push_up", "pushup"}
                             or normalized_name.startswith("push_up")
                             or normalized_name.startswith("pushup")
                         )
 
                         if is_push_up:
-                            push_up_count, push_up_feedback = push_up_analyzer.evaluate(
+                            push_up_count, analysis_result = push_up_analyzer.evaluate(
                                 landmarks,
                                 timestamp=time.monotonic(),
                             )
 
-                            if push_up_feedback == "COUNT_SUCCESS":
+                            if analysis_result.get("status") == "count_success":
                                 exercise_count = push_up_count
                                 await websocket.send_text(json.dumps({
                                     "status": "count",
                                     "count": exercise_count,
                                     "type": "count",
                                     "signal": "COUNT_SUCCESS",
-                                    "priority": 0
+                                    "priority": 0,
                                 }))
-                            elif push_up_feedback:
+                            elif analysis_result.get("status") == "error":
                                 await websocket.send_text(json.dumps({
-                                    "status": "feedback",
-                                    "feedback": push_up_feedback,
-                                    "type": "feedback",
-                                    "signal": "FEEDBACK",
-                                    "priority": 100
+                                    "status": "error",
+                                    "error_code": analysis_result.get("error_code"),
+                                    "message": analysis_result.get("message"),
+                                    "rep_number": analysis_result.get("rep_number"),
+                                    "count": exercise_count,
                                 }))
-                        else:
-                            print(f"ℹ️ 예측 라벨: {predicted_label} (푸시업 판별 제외)")
 
                     for _ in range(20):
                         frame_sequence.popleft()
