@@ -355,39 +355,66 @@
         window.speechSynthesis.speak(utterance);
       }
 
+      /**
+       * 함수 설명: 메트로놈 1초 간격의 삑소리와 숫자 음성을 순차적으로 실행
+       * 
+       * 추가 설명: 2개의 메트로놈 변수와 한개의 횟수 음성을 1초마다 실행하도록 세팅 후 재귀함수로 100회까지 진행이 됨
+       */
       function runMetronomeCycle() {
-        const steps = [
-          { type: 'click' },
-          { type: 'click' },
-          { type: 'speak', value: 1 },
-          { type: 'click' },
-          { type: 'click' },
-          { type: 'speak', value: 2 }
-        ];
+        if (!isStreaming) return;
 
-        steps.forEach((step, index) => {
-          const timeoutId = setTimeout(() => {
+        const currentCount = metronomeState.cycleIndex + 1;
+        if (currentCount > 100) {
+          stopMetronome();
+          return;
+        }
+
+        const clickOne = setTimeout(() => {
+          if (!isStreaming) return;
+          playClickTone(880, 0.12, 0.08);
+        }, 0);
+
+        const clickTwo = setTimeout(() => {
+          if (!isStreaming) return;
+          playClickTone(880, 0.12, 0.08);
+        }, 1000);
+
+        const speakTimer = setTimeout(() => {
+          if (!isStreaming) return;
+          speakNumber(currentCount);
+
+          // 100("백") 음성이 끝까지 재생되도록 1초 뒤 종료
+          if (currentCount >= 100) {
+            const finishTimer = setTimeout(() => {
+              stopMetronome();
+            }, 1000);
+            metronomeState.pendingTimeouts.push(finishTimer);
+          }
+        }, 2000);
+
+        metronomeState.pendingTimeouts.push(clickOne, clickTwo, speakTimer);
+
+        if (currentCount < 100) {
+          metronomeState.cycleIndex = currentCount;
+          const nextCycleTimer = setTimeout(() => {
             if (!isStreaming) return;
+            runMetronomeCycle();
+          }, 3000);
 
-            if (step.type === 'click') {
-              playClickTone(880, 0.12, 0.08);
-              return;
-            }
+          metronomeState.timerId = nextCycleTimer;
+          metronomeState.pendingTimeouts.push(nextCycleTimer);
+        } else {
+          metronomeState.cycleIndex = 100;
+          }
+}
 
-            speakNumber(step.value);
-          }, index * 1000);
-
-          metronomeState.pendingTimeouts.push(timeoutId);
-        });
-      }
-
+      /**
+       * 함수 설명: 메트로놈 타이머를 초기화하고 1~100까지 순차적으로 음성/삑소리를 실행
+       */
       function startMetronome() {
         stopMetronome();
         metronomeState.cycleIndex = 0;
         runMetronomeCycle();
-        metronomeState.timerId = setInterval(() => {
-          runMetronomeCycle();
-        }, metronomeState.intervalMs);
       }
 
       function stopMetronome() {
