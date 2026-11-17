@@ -340,15 +340,34 @@
           return tens[t] + units[u];
       }
 
-      function speakNumber(value) {
+      function speakNumber(value, isCountdown = false) {
         const number = Number(value);
         if (!Number.isFinite(number) || number < 1) return;
 
         if (!('speechSynthesis' in window)) return;
 
-        const utterance = new SpeechSynthesisUtterance(toKoreanCount(number));
+        const spokenValue = (() => {
+          if (isCountdown) {
+            if (number > 5) return '';
+            switch (number) {
+              case 1: return '일';
+              case 2: return '이';
+              case 3: return '삼';
+              case 4: return '사';
+              case 5: return '오';
+              default: return '';
+            }
+          }
+
+          if (number > 100) return '';
+          return toKoreanCount(number);
+        })();
+
+        if (!spokenValue) return;
+
+        const utterance = new SpeechSynthesisUtterance(spokenValue);
         utterance.lang = 'ko-KR';
-        utterance.rate = 1.0;
+        utterance.rate = 1.5;
         utterance.pitch = 1.0;
         utterance.volume = 1;
         window.speechSynthesis.cancel();
@@ -377,7 +396,7 @@
         const clickTwo = setTimeout(() => {
           if (!isStreaming) return;
           playClickTone(880, 0.12, 0.08);
-        }, 1000);
+        }, 1300);
 
         const speakTimer = setTimeout(() => {
           if (!isStreaming) return;
@@ -390,7 +409,7 @@
             }, 1000);
             metronomeState.pendingTimeouts.push(finishTimer);
           }
-        }, 2000);
+        }, 2600);
 
         metronomeState.pendingTimeouts.push(clickOne, clickTwo, speakTimer);
 
@@ -399,7 +418,7 @@
           const nextCycleTimer = setTimeout(() => {
             if (!isStreaming) return;
             runMetronomeCycle();
-          }, 3000);
+          }, 3900);
 
           metronomeState.timerId = nextCycleTimer;
           metronomeState.pendingTimeouts.push(nextCycleTimer);
@@ -414,7 +433,13 @@
       function startMetronome() {
         stopMetronome();
         metronomeState.cycleIndex = 0;
-        runMetronomeCycle();
+
+        const initialDelayTimer = setTimeout(() => {
+          if (!isStreaming) return;
+          runMetronomeCycle();
+        }, 2000);
+
+        metronomeState.pendingTimeouts.push(initialDelayTimer);
       }
 
       function stopMetronome() {
@@ -611,16 +636,20 @@
         };
 
         showCountdown(countdownValue);
-        speakNumber(countdownValue);
 
         countdownTimer = setInterval(() => {
           if (!isStreaming) return;
 
           countdownValue -= 1;
 
-          if (countdownValue > 0) {
+          if (countdownValue >= 6) {
             showCountdown(countdownValue);
-            speakNumber(countdownValue);
+            return;
+          }
+
+          if (countdownValue >= 1) {
+            showCountdown(countdownValue);
+            speakNumber(countdownValue, true);
             return;
           }
 
@@ -646,6 +675,8 @@
 
         utterance.onend = () => {
           if (!isStreaming || countdownSequenceStarted) return;
+          clearTimeout(countdownStartTimer);
+          countdownStartTimer = null;
           beginCountdownSequence();
         };
 
@@ -672,18 +703,25 @@
         stopCountdown();
         countdownSequenceStarted = false;
 
+        // AudioContext 초기화를 미리 준비해 첫 박자가 약해지거나 간격이 줄어드는 문제를 방지
+        ensureAudioContext();
+
         if (!(await startCamera())) {
           return;
         }
 
         const guideText = '삑 삑 소리에 맞춰서 내려갔다가 올라오세요. 10초 카운트 다운을 시작합니다.';
         feedbackMessage.textContent = guideText;
-        speakGuideMessage(guideText);
 
+        // 안전장치: 안내 멘트가 끝난 직후 10초 카운트다운이 진행되도록 타이머 설정
         countdownStartTimer = setTimeout(() => {
           if (!isStreaming || countdownSequenceStarted) return;
+          clearTimeout(countdownStartTimer);
+          countdownStartTimer = null;
           beginCountdownSequence();
-        }, 5000);
+        }, 12000);
+
+        speakGuideMessage(guideText);
       }
 
       function handleToggle() {
