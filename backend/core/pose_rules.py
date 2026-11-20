@@ -30,8 +30,6 @@ class PushUpAnalyzer:
     """MediaPipe 랜드마크 기반 푸시업 분석기"""
 
     def __init__(self):
-        self.count = 0
-        self._last_count_time = None
         self._down_completed = False
         self.error_history: list[Dict[str, Any]] = []
         self.last_error: Optional[Dict[str, Any]] = None
@@ -58,7 +56,7 @@ class PushUpAnalyzer:
         return self._to_xy(landmarks[index])
 
     def _log_error(self, error_code: str, message: str, rep_number: Optional[int] = None):
-        rep_number = max(self.count + 1, 1) if rep_number is None else rep_number
+        rep_number = 1 if rep_number is None else rep_number
         signature = (rep_number, error_code)
         if self._last_error_signature == signature:
             return self.last_error
@@ -66,7 +64,6 @@ class PushUpAnalyzer:
         entry = {
             "exercise": "push_up",
             "rep_number": rep_number,
-            "count": self.count,
             "error_code": error_code,
             "message": message,
             "timestamp": time.time(),
@@ -129,87 +126,92 @@ class PushUpAnalyzer:
             return calculate_angle(shoulder, hip, ankle)
         return None
 
-    def evaluate(self, landmarks, timestamp=None):
+    def evaluate(self, landmarks, rep_number: int = 1):
         """현재 프레임의 랜드마크를 기반으로 푸시업 상태를 평가한다."""
-        if timestamp is None:
-            timestamp = time.monotonic()
 
         if not landmarks:
-            return self.count, {"status": "idle", "message": "no_landmarks", "error_code": None, "rep_number": self.count + 1}
+            return {"status": "idle", "message": "no_landmarks", "error_code": None, "rep_number": rep_number}
 
         elbow_angle = self._get_elbow_angle(landmarks)
         torso_angle = self._get_torso_angle(landmarks)
-        current_rep = self.count + 1
-
+        current_rep = rep_number
         if torso_angle is not None and torso_angle < 160:
             self._log_error("waist_bend", "허리가 처졌습니다", current_rep)
-            return self.count, {
+            return {
                 "status": "error",
                 "error_code": "waist_bend",
                 "message": "허리가 처졌습니다",
                 "rep_number": current_rep,
-            }
+                }
 
-        #TODO: 팔 각도 측정 불가 조건문 삭제 
-        # evaluate 함수의 목적은 관절 인식이 아니라 자세 평가
         if elbow_angle is None:
             self._log_error("landmark_missing", "팔 각도를 측정할 수 없습니다", current_rep)
-            return self.count, {
+            return {
                 "status": "error",
                 "error_code": "landmark_missing",
                 "message": "팔 각도를 측정할 수 없습니다",
                 "rep_number": current_rep,
-            }
-
+                }
+  
         if elbow_angle <= 90:
             self._down_completed = True
-            return self.count, {
-                "status": "down",
-                "error_code": None,
-                "message": "팔을 내리고 있습니다",
-                "rep_number": current_rep,
-            }
 
+        # TODO: elbow_angle이 90 < elbow_angle < 150 정의하기 (반환값: {"status": "in_progress", ...})
         if elbow_angle >= 150:
             if self._down_completed:
-                if self._last_count_time is None or (timestamp - self._last_count_time) >= 0.6:
-                    self.count += 1
-                    self._last_count_time = timestamp
-                    self._down_completed = False
-                    return self.count, {
-                        "status": "count_success",
-                        "error_code": None,
-                        "message": "COUNT_SUCCESS",
-                        "rep_number": self.count,
-                    }
                 self._down_completed = False
-                return self.count, {
-                    "status": "count_wait",
-                    "error_code": None,
-                    "message": "한 번 완료되었습니다",
-                    "rep_number": current_rep,
-                }
-            return self.count, {
-                "status": "ready",
-                "error_code": None,
+                return {
+                     "status": "count_success",
+                     "error_code": None,
+                     "message": "COUNT_SUCCESS",
+                     "rep_number": current_rep,
+                     }
+                
+            # TODO: 60프레임 전체를 다 본 뒤 self._down_completed가 끝까지 False였을 때 한 번만 판정 (처음부터 팔을 피라는 문구 출력 방지)
+            return {
+                "status": "error",
+                "error_code": "insufficient_depth",
                 "message": "팔을 완전히 펴세요",
                 "rep_number": current_rep,
-            }
+                }
 
-        self._down_completed = False
-        return self.count, {
-            "status": "in_progress",
+
+    def evaluate_sequence(self, landmarks_sequence: list, rep_number: int = 1):
+        """60프레임 랜드마크 시퀀스를 순서대로 평가하고 rep 단위 에러를 반환한다."""
+
+        last_result = {
+            "status": "idle",
             "error_code": None,
-            "message": "",
-            "rep_number": current_rep,
+            "message": "no_landmarks",
+            "rep_number": rep_number,
         }
+        first_error = None
+        has_valid_frame = False
 
-    def evaluate_pushup(self, landmarks, timestamp=None):
-        return self.evaluate(landmarks, timestamp=timestamp)
+        
+        for landmarks in landmarks_sequence:
+            if not landmarks:
+               continue
 
+            has_valid_frame = True
+            result = self.evaluate(landmarks, rep_number)
 
-def evaluate_pushup(landmarks, analyzer=None):
-    """편의 함수: 푸시업 분석을 한 번 수행하고 (count, result_dict)를 반환."""
-    if analyzer is None:
-        analyzer = PushUpAnalyzer()
-    return analyzer.evaluate(landmarks)
+            result = dict(result)
+            
+            result["rep_number"] = rep_number
+
+            if result.get("status") == "error" and first_error is None:
+                first_error = dict(result)
+
+            last_result = result
+
+        if not has_valid_frame:
+            return {
+                    "status": "idle",
+                    "error_code": None,
+                    "message": "no_landmarks",
+                    "rep_number": rep_number,
+                    }
+
+        return first_error or last_result
+        

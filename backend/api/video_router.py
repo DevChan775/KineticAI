@@ -6,8 +6,7 @@ import json
 import os
 import time
 import joblib
-import tensorflow as tf 
-from collections import deque
+import tensorflow as tf
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -29,10 +28,13 @@ options = vision.PoseLandmarkerOptions(
     running_mode=vision.RunningMode.VIDEO,
     min_pose_detection_confidence=0.3,
     min_pose_presence_confidence=0.3,
-    min_tracking_confidence=0.3 
+    min_tracking_confidence=0.3,
 )
 detector = vision.PoseLandmarker.create_from_options(options)
 
+model = None
+scaler = None
+encoder = None
 try:
     model = tf.keras.models.load_model(os.path.join(CORE_DIR, "kinetic_lstm_model.keras"))
     scaler = joblib.load(os.path.join(CORE_DIR, "scaler.pkl"))
@@ -50,34 +52,56 @@ async def websocket_video_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
 
-    frame_sequence = deque(maxlen=SEQ_LENGTH)
-    exercise_count = 0
-
     try:
         while True:
+            payload = await websocket.receive_text()
+            if not payload:
+                continue
+
             try:
-                payload = await websocket.receive_text()
-                if not payload:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                print("⚠️ 잘못된 JSON 페이로드")
+                continue
+
+            rep_number = data.get("rep_number")
+            exercise = str(data.get("exercise", "")).strip().lower()
+            frames = data.get("frames")
+
+            if not isinstance(rep_number, int) or rep_number < 1:
+                print("⚠️ 유효하지 않은 rep_number")
+                continue
+            if not isinstance(frames, list) or len(frames) != SEQ_LENGTH:
+                print(f"⚠️ rep={rep_number}: 프레임 수가 60개가 아닙니다")
+                continue
+
+            frame_keypoints = [None] * SEQ_LENGTH
+            landmark_sequence = [None] * SEQ_LENGTH
+            valid_frame_count = 0
+            rep_start_ms = int(time.time() * 1000)
+
+            for frame_index, frame_base64 in enumerate(frames):
+                if not isinstance(frame_base64, str):
                     continue
-                img_data = base64.b64decode(payload)
-            except Exception:
-                break
 
-            try:
-                np_arr = np.frombuffer(img_data, np.uint8)
-                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            except Exception:
-                continue
+                try:
+                    img_data = base64.b64decode(frame_base64, validate=True)
+                    np_arr = np.frombuffer(img_data, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
 
-            if frame is None:
-                continue
+                    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+                    timestamp_ms = rep_start_ms + (frame_index * 1000 // 30)
+                    detection_result = detector.detect_for_video(mp_image, timestamp_ms)
+                except Exception as exc:
+                    print(f"⚠️ rep={rep_number} frame={frame_index}: 디코딩/포즈 추출 실패: {exc}")
+                    continue
 
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-            current_timestamp_ms = int(time.time() * 1000)
-            detection_result = detector.detect_for_video(mp_image, current_timestamp_ms)
+                if not detection_result.pose_landmarks:
+                    continue
 
-            if detection_result.pose_landmarks and len(detection_result.pose_landmarks) > 0:
                 landmarks = detection_result.pose_landmarks[0]
 
                 def get_pt(idx):
@@ -134,60 +158,76 @@ async def websocket_video_endpoint(websocket: WebSocket):
                 keypoints.extend(l_foot)
                 keypoints.extend(r_foot)
 
-                frame_sequence.append(keypoints)
+                frame_keypoints[frame_index] = keypoints # ai 예측 전용
+                landmark_sequence[frame_index] = landmarks # 관절 평가 데이터
+                valid_frame_count += 1
 
-                if len(frame_sequence) == SEQ_LENGTH:
-                    input_data = np.array(frame_sequence)
-                    input_scaled = scaler.transform(input_data)
-                    input_final = np.expand_dims(input_scaled, axis=0)
+            if valid_frame_count == 0:
+                print(f"⚠️ rep={rep_number}: 추출 가능한 포즈가 없습니다")
+                continue
 
-                    prediction = model.predict(input_final, verbose=0)
-                    class_idx = np.argmax(prediction)
-                    max_prob = float(np.max(prediction))
+            if None in frame_keypoints:
+                print(f"⚠️ rep={rep_number}: 일부 프레임에서 포즈 추출 실패, 누락된 프레임이 있습니다")
 
-                    if max_prob >= 0.50:
-                        predicted_label = str(encoder.inverse_transform([class_idx])[0]).strip()
-                        normalized_name = predicted_label.lower().replace(" ", "_").replace("-", "_")
+            # 누락 프레임은 직전 유효 프레임으로 채워 입력 shape를 유지한다
+            padded_keypoints = []
+            last_valid_keypoints = np.zeros(48, dtype=np.float32)
+            for keypoints in frame_keypoints:
+                if keypoints is not None:
+                    last_valid_keypoints = np.asarray(keypoints, dtype=np.float32)
+                padded_keypoints.append(last_valid_keypoints.copy())
 
-                        # 실제 라벨 예시: 'push_up_correct', 'push_up_incorrect', 
-                        # 단순 split('_', 1)은 'push'만 남아서 푸시업 판별이 실패한다.
-                        if normalized_name.endswith("_correct") or normalized_name.endswith("_incorrect"):
-                            normalized_name = normalized_name.rsplit("_", 1)[0]
+            if model is None or scaler is None or encoder is None:
+                print(f"⚠️ rep={rep_number}: 모델이 로드되지 않아 추론을 건너뜁니다")
+                continue
 
-                        is_push_up = (
-                            normalized_name in {"push_up", "pushup"}
-                            or normalized_name.startswith("push_up")
-                            or normalized_name.startswith("pushup")
-                        )
+            input_data = np.asarray(padded_keypoints, dtype=np.float32)
+            if input_data.shape != (SEQ_LENGTH, 48):
+                print(f"⚠️ rep={rep_number}: 키포인트 shape={input_data.shape}")
+                continue
 
-                        if is_push_up:
-                            push_up_count, analysis_result = push_up_analyzer.evaluate(
-                                landmarks,
-                                timestamp=time.monotonic(),
-                            )
+            input_scaled = scaler.transform(input_data)
+            input_final = np.expand_dims(input_scaled, axis=0)
 
-                            if analysis_result.get("status") == "count_success":
-                                exercise_count = push_up_count
-                                await websocket.send_text(json.dumps({
-                                    "status": "count",
-                                    "count": exercise_count,
-                                    "type": "count",
-                                    "signal": "COUNT_SUCCESS",
-                                    "priority": 0,
-                                }))
-                            elif analysis_result.get("status") == "error":
-                                await websocket.send_text(json.dumps({
-                                    "status": "error",
-                                    "error_code": analysis_result.get("error_code"),
-                                    "message": analysis_result.get("message"),
-                                    "rep_number": analysis_result.get("rep_number"),
-                                    "count": exercise_count,
-                                }))
+            # 이 rep의 60프레임에 대해 model.predict()는 단 1회만 호출한다.
+            prediction = model.predict(input_final, verbose=0)
+            class_idx = int(np.argmax(prediction))
+            max_prob = float(np.max(prediction))
 
-                    for _ in range(20):
-                        frame_sequence.popleft()
-            else:
-                print("❌ 포즈 감지 실패 (화면에 전신이 나오지 않거나 자세 인식 불가)")
+            if max_prob < 0.50:
+                continue
+
+            predicted_label = str(encoder.inverse_transform([class_idx])[0]).strip()
+            normalized_name = predicted_label.lower().replace(" ", "_").replace("-", "_")
+            if normalized_name.endswith("_correct") or normalized_name.endswith("_incorrect"):
+                normalized_name = normalized_name.rsplit("_", 1)[0]
+
+            is_push_up = (
+                normalized_name in {"push_up", "pushup"}
+                or normalized_name.startswith("push_up")
+                or normalized_name.startswith("pushup")
+            )
+
+            if not is_push_up:
+                continue
+
+            exercise_name = exercise.replace("-", "_").replace(" ", "_")
+            if exercise_name not in {"", "push_up", "pushup"}:
+                continue
+
+            if landmark_sequence:
+                rule_result = push_up_analyzer.evaluate_sequence(landmark_sequence, rep_number=rep_number)
+
+                if rule_result and rule_result.get("status") == "error":
+                    response = {
+                        "status": "error",
+                        "rep_number": rep_number,
+                        "error_code": rule_result.get("error_code"),
+                        "message": rule_result.get("message"),
+                    }
+                    await websocket.send_text(json.dumps(response))
+
+                # TODO: DB 적재
 
     except WebSocketDisconnect:
         print("❌ 핸드폰 앱과의 연결 종료")
