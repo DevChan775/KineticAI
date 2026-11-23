@@ -44,12 +44,11 @@ except Exception as e:
     print(f"⚠️ 모델/스케일러/인코더 로드 실패: {e}")
 
 SEQ_LENGTH = 60
-push_up_analyzer = PushUpAnalyzer()
-
 
 @router.websocket("/ws/video")
 async def websocket_video_endpoint(websocket: WebSocket):
     await websocket.accept()
+    push_up_analyzer = PushUpAnalyzer()
     print("✅ 핸드폰 앱과 실시간 연결 성공!")
 
     try:
@@ -218,14 +217,8 @@ async def websocket_video_endpoint(websocket: WebSocket):
             if landmark_sequence:
                 rule_result = push_up_analyzer.evaluate_sequence(landmark_sequence, rep_number=rep_number)
 
-                if rule_result and rule_result.get("status") == "error":
-                    response = {
-                        "status": "error",
-                        "rep_number": rep_number,
-                        "error_code": rule_result.get("error_code"),
-                        "message": rule_result.get("message"),
-                    }
-                    await websocket.send_text(json.dumps(response))
+                if rule_result and rule_result.get("status") in {"error", "count_success"}:
+                    await websocket.send_text(json.dumps(rule_result))
 
                 # TODO: DB 적재
 
