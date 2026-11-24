@@ -231,19 +231,19 @@
       const borderOverlay = document.getElementById('borderOverlay');
       const statusBadge = document.getElementById('statusBadge');
 
-      const FRAME_BUFFER_LIMIT = 60;
-      const CAPTURE_WIDTH = 1920;
-      const CAPTURE_HEIGHT = 1080;
+      const CAPTURE_WIDTH = 640;
+      const CAPTURE_HEIGHT = 360;
 
       let selectedExercise = '풀업';
       let stream = null;
       let socket = null;
       let frameTimer = null;
       let isStreaming = false;
+      let frameBuffer = [];
+      let isCollectingRep = false;
       let countdownTimer = null;
       let countdownValue = 10;
       let currentFeedback = '원하는 운동을 고르고 촬영을 시작하세요.';
-      let frameBuffer = [];
       let isExerciseStarted = false;
       let countdownStartTimer = null;
       let countdownSequenceStarted = false;
@@ -390,6 +390,8 @@
 
         const clickOne = setTimeout(() => {
           if (!isStreaming) return;
+          frameBuffer = [];
+          isCollectingRep = true;
           playClickTone(880, 0.12, 0.08);
         }, 0);
 
@@ -400,6 +402,16 @@
 
         const speakTimer = setTimeout(() => {
           if (!isStreaming) return;
+          isCollectingRep = false;
+          updateCountUi(currentCount);
+          const sampledFrames = resampleTo60Frames(frameBuffer); // frameBuffer: sendFrameToServer에서 수집된 프레임 배열
+          if (sampledFrames.length === 60 && socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+              rep_number: currentCount,
+              exercise: selectedExercise === '푸쉬업' ? 'push_up' : selectedExercise,
+              frames: sampledFrames
+            }));
+          }
           speakNumber(currentCount);
 
           // 100("백") 음성이 끝까지 재생되도록 1초 뒤 종료
@@ -512,9 +524,9 @@
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: 'user',
-              // LSTM 데이터 수집을 1920 x 1080 으로 세팅
-              width: { ideal: 1920, max: 1920 },
-              height: { ideal: 1080, max: 1080 },
+              // LSTM 데이터 수집을 640 x 360 으로 세팅
+              width: { ideal: 640, max: 640 },
+              height: { ideal: 360, max: 360 },
               aspectRatio: 1.7777777778
             },
             audio: false
@@ -523,7 +535,6 @@
           video.srcObject = stream;
           await video.play();
           ensureSocket();
-          frameBuffer = [];
           isExerciseStarted = false;
           startFrameLoop();
           isStreaming = true;
@@ -555,38 +566,37 @@
           video.srcObject = null;
         }
 
-        frameBuffer = [];
         isExerciseStarted = false;
         stopMetronome();
+        frameBuffer = [];
+        isCollectingRep = false;
         isStreaming = false;
         countLabel.style.display = 'none';
         updateBorder('transparent');
       }
-      
-      /**
-       * 함수 설명: 초기 60프레임을 한번에 전송하는 함수
-       * 
-       * 추가 설명: sendFrameToServer() 함수와 분리한 이유는 60프레임을 보내는 부분이 한번만 쓰이고 가독성을 위해 분리함
-       */
-      function flushFrameBuffer() {
-        if (!frameBuffer.length) return;
 
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          frameBuffer.forEach((frame) => {
-            socket.send(frame);
-          });
+      function resampleTo60Frames(frames) {
+        if (!Array.isArray(frames) || frames.length === 0) return [];
+
+        if (frames.length >= 60) {
+          return Array.from({ length: 60 }, (_, index) =>
+            frames[Math.round(index * (frames.length - 1) / 59)]
+          );
         }
 
-        frameBuffer = [];
+        const sampled = frames.slice();
+        const lastFrame = frames[frames.length - 1];
+        while (sampled.length < 60) {
+          sampled.push(lastFrame);
+        }
+        return sampled;
       }
+      
       /**
-       * 함수 설명: 카운트 다운이 진행될 때, 초기에 백엔드로 보낼 60프레임을 미리 쌓아놓는 함수
-       * 함수 목적: 초기에 60프레임까지 쌓는데 많은 시간이 소요되므로 대기 시간을 확보하기 위함
-       * 
-       * 추가 설명: 60프레임을 쌓는 것과 추후 운동 시작 시 프레임을 백엔드에 보내는 것만 담당
-       *           초기 60프레임을 한번에 보내는 것은 flushFrameBuffer() 함수에서 진행 
+       * 함수 설명: runMetronomeCycle()의 메크로놈 소리에 맞춰 프레임 수집
        */
       function sendFrameToServer() {
+        if (!isCollectingRep) return;
         if (!video || video.readyState < 2) return;
 
         const canvas = document.createElement('canvas');
@@ -599,15 +609,7 @@
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
         const base64 = dataUrl.split(',')[1];
         if (!base64) return;
-
         frameBuffer.push(base64);
-        if (frameBuffer.length > FRAME_BUFFER_LIMIT) {
-          frameBuffer.shift();
-        }
-
-        if (isExerciseStarted && socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(base64);
-        }
       }
       /**
        * 함수 설명: sendFrameToServer를 33.3ms 마다 호출
@@ -655,7 +657,6 @@
 
           clearInterval(countdownTimer);
           countdownTimer = null;
-          flushFrameBuffer();
           isExerciseStarted = true;
           startMetronome();
           feedbackMessage.textContent = `${selectedExercise} 운동을 시작합니다.`;
